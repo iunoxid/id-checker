@@ -134,9 +134,6 @@ async function watchDomain(options) {
 
   if (statusUpdateIntervalMs > 0) {
     statusMessageId = await sendTelegramText(buildStatusText(state));
-    setInterval(() => {
-      void editTelegramText(statusMessageId, buildStatusText(state));
-    }, statusUpdateIntervalMs);
   }
 
   while (true) {
@@ -193,6 +190,11 @@ async function watchDomain(options) {
     const jitterMs = jitterSec * 1000;
     const backoffExtra = Math.min(600, errorStreak * 10);
     const delayMs = randomJitter(baseMs, jitterMs) + backoffExtra * 1000;
+
+    // Update pesan status di Telegram HANYA setiap kali selesai cek RDAP
+    if (statusMessageId) {
+      await editTelegramText(statusMessageId, buildStatusText(state));
+    }
 
     await sleep(delayMs);
   }

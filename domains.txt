@@ -1,0 +1,6 @@
+# Daftar domain yang ingin dipantau
+# Satu domain per baris
+# Baris yang diawali # dianggap komentar
+
+caramel.id
+gsadasd.id

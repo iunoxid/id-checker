@@ -1,7 +1,9 @@
-﻿const { fetchDomain, BASE_URL } = require('./rdapClient');
-const { sendDiscordMessage, editDiscordMessage } = require('./discordNotifier');
+const { fetchDomain, BASE_URL } = require('./rdapClient');
+const { sendTelegramMessage, editTelegramMessage, sendTelegramText, editTelegramText } = require('./telegramNotifier');
 const { utcNow, formatUtcDate, formatGmtPlus7, sleep, randomJitter, beep } = require('./utils');
 const { config } = require('./config');
+const logger = require('./logger');
+const stateRegistry = require('./stateRegistry');
 
 function extractRegistrar(data) {
   const entities = Array.isArray(data?.entities) ? data.entities : [];
@@ -29,23 +31,58 @@ function extractExpiry(data) {
   return null;
 }
 
-function buildStatusEmbed(state) {
-  const fields = [
-    { name: 'Domain', value: state.domain, inline: true },
-    { name: 'Last check (GMT+7)', value: state.lastCheckGmt7 || '-', inline: true },
-    { name: 'HTTP', value: String(state.lastHttp || '-'), inline: true },
-  ];
 
-  if (state.lastStatus) fields.push({ name: 'Status', value: state.lastStatus, inline: false });
-  if (state.registrar) fields.push({ name: 'Registrar', value: state.registrar, inline: false });
-  if (state.expiryGmt7) fields.push({ name: 'Expiry (GMT+7)', value: state.expiryGmt7, inline: false });
-  if (state.lastError) fields.push({ name: 'Error', value: state.lastError, inline: false });
+function buildStatusText(state) {
+  const lines = [];
 
-  return [{
-    title: 'RDAP Watch Status',
-    color: 3447003,
-    fields,
-  }];
+  lines.push('📡 RDAP Watch Status');
+  lines.push('');
+  lines.push(`Domain: ${state.domain}`);
+  lines.push(`Last check (GMT+7): ${state.lastCheckGmt7 || '-'}`);
+  lines.push(`HTTP: ${state.lastHttp || '-'}`);
+  lines.push(`Status: ${state.lastStatus || '-'}`);
+
+  if (state.registrar) {
+    lines.push('');
+    lines.push(`Registrar: ${state.registrar}`);
+  }
+
+  if (state.expiryGmt7) {
+    lines.push('');
+    lines.push(`Expiry (GMT+7): ${state.expiryGmt7}`);
+  }
+
+  if (state.lastError) {
+    lines.push('');
+    lines.push(`⚠️ Error: ${state.lastError}`);
+  }
+
+  return lines.join('\n');
+}
+
+const CRITICAL_STATUSES = ['pending delete', 'redemption'];
+
+function isCritical(status) {
+  if (!status) return false;
+  const s = status.toLowerCase();
+  return CRITICAL_STATUSES.some((c) => s.includes(c));
+}
+
+function buildCriticalAlertText(domain, prevStatus, currStatus, state) {
+  const lines = [];
+  const mention = buildMention();
+  if (mention) lines.push(mention);
+
+  lines.push('⚠️ STATUS KRITIS TERDETEKSI!');
+  lines.push('');
+  lines.push(`Domain: ${domain}`);
+  lines.push(`Status sebelumnya: ${prevStatus || '-'}`);
+  lines.push(`Status sekarang: ${currStatus}`);
+  lines.push(`Waktu (GMT+7): ${formatGmtPlus7(new Date())}`);
+  lines.push('');
+  lines.push('Pantau terus — grab saat status jadi 404!');
+
+  return lines.join('\n');
 }
 
 function buildDropEmbed(domain) {
@@ -61,9 +98,9 @@ function buildDropEmbed(domain) {
 }
 
 function buildMention() {
-  const id = config.DISCORD_MENTION_ID;
+  const id = config.TELEGRAM_MENTION_ID;
   if (!id) return null;
-  return `<@${id}>`;
+  return `@${id}`;
 }
 
 async function watchDomain(options) {
@@ -86,17 +123,19 @@ async function watchDomain(options) {
     lastHttp: null,
     lastStatus: null,
     registrar: null,
+    expiryRaw: null,
     expiryGmt7: null,
     lastError: null,
   };
 
-  console.log(`[watcher] Starting watch for ${domain}`);
-  console.log(`[watcher] interval=${intervalSec}s jitter=+/-${jitterSec}s timeout=${timeoutMs}ms notifyOn=${notifyOn}`);
+  logger.info(`[watcher] Starting watch for ${domain}`);
+  logger.info(`[watcher] interval=${intervalSec}s jitter=+/-${jitterSec}s timeout=${timeoutMs}ms notifyOn=${notifyOn}`);
+  stateRegistry.updateState(domain, state);
 
   if (statusUpdateIntervalMs > 0) {
-    statusMessageId = await sendDiscordMessage(null, buildStatusEmbed(state));
+    statusMessageId = await sendTelegramText(buildStatusText(state));
     setInterval(() => {
-      void editDiscordMessage(statusMessageId, null, buildStatusEmbed(state));
+      void editTelegramText(statusMessageId, buildStatusText(state));
     }, statusUpdateIntervalMs);
   }
 
@@ -109,31 +148,45 @@ async function watchDomain(options) {
     if (statusCode === 200) {
       errorStreak = 0;
       const currentStatus = Array.isArray(data?.status) ? data.status.join(', ') : (data?.status || 'unknown');
-      console.log(`[rdap] ${domain} status: ${currentStatus}`);
+      logger.info(`[rdap] ${domain} status: ${currentStatus}`);
       state.lastStatus = currentStatus;
       state.registrar = extractRegistrar(data);
       const expiryRaw = extractExpiry(data);
+      state.expiryRaw = expiryRaw || null;
       state.expiryGmt7 = expiryRaw ? formatGmtPlus7(expiryRaw) : null;
+      stateRegistry.updateState(domain, state);
 
-      if (lastStatus && currentStatus !== lastStatus && (notifyOn === 'status_change' || notifyOn === 'both')) {
-        await sendDiscordMessage(`Status change for ${domain}: ${lastStatus} -> ${currentStatus} (${utcNow()})`);
+      if (lastStatus && currentStatus !== lastStatus) {
+        // Alert status change biasa
+        if (notifyOn === 'status_change' || notifyOn === 'both') {
+          await sendTelegramMessage(`Status change for ${domain}: ${lastStatus} -> ${currentStatus} (${utcNow()})`);
+        }
+        // Alert khusus jika masuk status KRITIS
+        if (isCritical(currentStatus) && !isCritical(lastStatus)) {
+          logger.warn(`[watcher] Status kritis terdeteksi untuk ${domain}: ${currentStatus}`);
+          await sendTelegramText(buildCriticalAlertText(domain, lastStatus, currentStatus, state));
+        }
       }
 
       lastStatus = currentStatus;
     } else if (statusCode === 404) {
-      await sendDiscordMessage(buildMention(), buildDropEmbed(domain));
+      state.lastStatus = 'DROPPED (404)';
+      state.lastHttp = 404;
+      stateRegistry.updateState(domain, state);
+      await sendTelegramMessage(buildMention(), buildDropEmbed(domain));
 
       if (loud) {
         beep(6, 200);
       }
 
-      console.log('[watcher] Drop detected. Exiting.');
-      process.exit(0);
+      logger.info(`[watcher] Drop detected for ${domain}. Stopping watcher for this domain.`);
+      return;
     } else {
       errorStreak += 1;
       const detail = data?.error ? ` (${data.error})` : '';
-      console.warn(`[rdap] Unexpected status ${statusCode}${detail}`);
+      logger.warn(`[rdap] Unexpected status ${statusCode}${detail}`);
       state.lastError = data?.error ? String(data.error) : `HTTP ${statusCode}`;
+      stateRegistry.updateState(domain, state);
     }
 
     const baseMs = intervalSec * 1000;
@@ -145,4 +198,4 @@ async function watchDomain(options) {
   }
 }
 
-module.exports = { watchDomain };
+module.exports = { watchDomain, buildStatusText };

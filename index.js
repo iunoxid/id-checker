@@ -62,7 +62,6 @@ async function main() {
           timeoutMs: config.DEFAULT_TIMEOUT,
           notifyOn: config.NOTIFY_ON,
           loud: config.LOUD,
-          statusUpdateIntervalMs: config.STATUS_UPDATE_INTERVAL_MS,
         });
       });
     })

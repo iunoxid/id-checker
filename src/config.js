@@ -22,7 +22,6 @@ const config = {
     .filter(Boolean),
   NOTIFY_ON: (process.env.NOTIFY_ON || '404').trim(),
   LOUD: toBool(process.env.LOUD, false),
-  STATUS_UPDATE_INTERVAL_MS: toInt(process.env.STATUS_UPDATE_INTERVAL_MS, 15000),
   DOMAIN_START_DELAY_MS: toInt(process.env.DOMAIN_START_DELAY_MS, 30000),
   DEFAULT_INTERVAL: toInt(process.env.DEFAULT_INTERVAL, 180),
   DEFAULT_JITTER: toInt(process.env.DEFAULT_JITTER, 15),

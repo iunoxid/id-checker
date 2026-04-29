@@ -1,5 +1,5 @@
 const { fetchDomain, BASE_URL } = require('./rdapClient');
-const { sendTelegramMessage, editTelegramMessage, sendTelegramText, editTelegramText } = require('./telegramNotifier');
+const { sendTelegramMessage, sendTelegramText } = require('./telegramNotifier');
 const { utcNow, formatUtcDate, formatGmtPlus7, sleep, randomJitter, beep } = require('./utils');
 const { config } = require('./config');
 const logger = require('./logger');
@@ -111,12 +111,10 @@ async function watchDomain(options) {
     timeoutMs,
     notifyOn,
     loud,
-    statusUpdateIntervalMs,
   } = options;
 
   let lastStatus = null;
   let errorStreak = 0;
-  let statusMessageId = null;
   const state = {
     domain,
     lastCheckGmt7: null,
@@ -131,10 +129,6 @@ async function watchDomain(options) {
   logger.info(`[watcher] Starting watch for ${domain}`);
   logger.info(`[watcher] interval=${intervalSec}s jitter=+/-${jitterSec}s timeout=${timeoutMs}ms notifyOn=${notifyOn}`);
   stateRegistry.updateState(domain, state);
-
-  if (statusUpdateIntervalMs > 0) {
-    statusMessageId = await sendTelegramText(buildStatusText(state));
-  }
 
   while (true) {
     const { statusCode, data } = await fetchDomain(domain, timeoutMs);
@@ -190,11 +184,6 @@ async function watchDomain(options) {
     const jitterMs = jitterSec * 1000;
     const backoffExtra = Math.min(600, errorStreak * 10);
     const delayMs = randomJitter(baseMs, jitterMs) + backoffExtra * 1000;
-
-    // Update pesan status di Telegram HANYA setiap kali selesai cek RDAP
-    if (statusMessageId) {
-      await editTelegramText(statusMessageId, buildStatusText(state));
-    }
 
     await sleep(delayMs);
   }
